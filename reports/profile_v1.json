@@ -1,0 +1,442 @@
+{
+ "conversion": {
+  "train_source1": {
+   "rows": 2206821,
+   "raw_lines": 2206821,
+   "tsv_mb": 210.1,
+   "parquet_mb": 88.7,
+   "secs": 3.7
+  },
+  "train_source2": {
+   "rows": 5034616,
+   "raw_lines": 5034616,
+   "tsv_mb": 489.3,
+   "parquet_mb": 214.9,
+   "secs": 7.1
+  },
+  "train_source3": {
+   "rows": 5285603,
+   "raw_lines": 5285603,
+   "tsv_mb": 503.7,
+   "parquet_mb": 221.7,
+   "secs": 6.7
+  },
+  "train_ground_truth": {
+   "rows": 2206821,
+   "raw_lines": 2206821,
+   "tsv_mb": 127.0,
+   "parquet_mb": 57.4,
+   "secs": 21.7
+  },
+  "test_source1": {
+   "rows": 1732544,
+   "raw_lines": 1732544,
+   "tsv_mb": 175.0,
+   "parquet_mb": 71.5,
+   "secs": 6.2
+  },
+  "test_source2": {
+   "rows": 4887273,
+   "raw_lines": 4887273,
+   "tsv_mb": 509.5,
+   "parquet_mb": 215.8,
+   "secs": 6.6
+  },
+  "test_source3": {
+   "rows": 5082316,
+   "raw_lines": 5082316,
+   "tsv_mb": 506.0,
+   "parquet_mb": 218.2,
+   "secs": 35.4
+  }
+ },
+ "sources": {
+  "train_source1": {
+   "rows": 2206821,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 0,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S1-": 2206821
+   },
+   "country_top10": {
+    "US": 1323633,
+    "India": 883188
+   },
+   "name_len": {
+    "mean": 24.0,
+    "p50": 24.0,
+    "p99": 42.0,
+    "max": 105
+   },
+   "address_len": {
+    "mean": 52.1,
+    "p50": 41.0,
+    "p99": 124.0,
+    "max": 256
+   },
+   "sample": [
+    {
+     "entity_id": "S1-906445972",
+     "business_name": "Vela Cornerstone Culture Inc",
+     "business_address": "N1211 Ii, Town Of Richford, WI",
+     "country": "US"
+    },
+    {
+     "entity_id": "S1-532159044",
+     "business_name": "Jayesh Industrial Private Limited",
+     "business_address": "Shop No. 4B 22, Maharashtra, Thane, Highland Corporate Center, Old Bhiwandi Road",
+     "country": "India"
+    },
+    {
+     "entity_id": "S1-138791421",
+     "business_name": "Dlp & Brothers Private Limited",
+     "business_address": "Door No. 2/351, Omallur - Pariyaram Road, Kozhencherry, Pathanamthitta, Kerala",
+     "country": "India"
+    }
+   ]
+  },
+  "train_source2": {
+   "rows": 5034616,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 168967,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S2-": 5034616
+   },
+   "country_top10": {
+    "US": 3016817,
+    "India": 2017799
+   },
+   "name_len": {
+    "mean": 25.1,
+    "p50": 25.0,
+    "p99": 48.0,
+    "max": 104
+   },
+   "address_len": {
+    "mean": 47.8,
+    "p50": 37.0,
+    "p99": 118.0,
+    "max": 249
+   },
+   "sample": [
+    {
+     "entity_id": "S2-296230290",
+     "business_name": "bean microelectronics inc",
+     "business_address": "MN, 5242 DOVE ISLAND, TOWER",
+     "country": "US"
+    },
+    {
+     "entity_id": "S2-612978641",
+     "business_name": "Kereon  LLC",
+     "business_address": "1304 PARSIFAL ST, ALBUQUERQUE, NM",
+     "country": "US"
+    },
+    {
+     "entity_id": "S2-270364846",
+     "business_name": "T N & Z TÓWING EAST P.C.",
+     "business_address": "#166 SHENANDOAH ROAD, NC, WEST END",
+     "country": "US"
+    }
+   ]
+  },
+  "train_source3": {
+   "rows": 5285603,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 175916,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S3-": 5285603
+   },
+   "country_top10": {
+    "US": 3170056,
+    "India": 2115547
+   },
+   "name_len": {
+    "mean": 25.2,
+    "p50": 25.0,
+    "p99": 50.0,
+    "max": 123
+   },
+   "address_len": {
+    "mean": 48.3,
+    "p50": 42.0,
+    "p99": 116.0,
+    "max": 240
+   },
+   "sample": [
+    {
+     "entity_id": "S3-287419190",
+     "business_name": "Midwest lrenic LLC",
+     "business_address": "20 Chandler Place, Newton, Massachusetts",
+     "country": "US"
+    },
+    {
+     "entity_id": "S3-426293843",
+     "business_name": "அல் லாஜிஸ்டிக்ஸ் பிரைவேட் லிமிடெட்",
+     "business_address": "Balaji Towers 11/239 Ramakrishna Road, Salem, தமிழ்நாடு",
+     "country": "India"
+    },
+    {
+     "entity_id": "S3-52991796",
+     "business_name": "young arts",
+     "business_address": "11 State Street, Marshaltlown, Iowa",
+     "country": "US"
+    }
+   ]
+  },
+  "test_source1": {
+   "rows": 1732544,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 0,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S1-": 1732544
+   },
+   "country_top10": {
+    "India": 809986,
+    "US": 663106,
+    "France": 259452
+   },
+   "name_len": {
+    "mean": 23.8,
+    "p50": 24.0,
+    "p99": 42.0,
+    "max": 92
+   },
+   "address_len": {
+    "mean": 57.2,
+    "p50": 50.0,
+    "p99": 126.0,
+    "max": 268
+   },
+   "sample": [
+    {
+     "entity_id": "S1-933523365",
+     "business_name": "Behavioral Health Associates LLC",
+     "business_address": "1299 Rannapo Road, Sheffield, MA",
+     "country": "US"
+    },
+    {
+     "entity_id": "S1-868622557",
+     "business_name": "Jai Motors Pvt Ltd",
+     "business_address": "1-64/Ae/3, Golconda, Hyderabad, Telangana, Plot No 3 Survey No 1",
+     "country": "India"
+    },
+    {
+     "entity_id": "S1-167146147",
+     "business_name": "Jamais Collège SARL",
+     "business_address": "13 Rue de Lille, Roubaix, Hauts-de-France",
+     "country": "France"
+    }
+   ]
+  },
+  "test_source2": {
+   "rows": 4887273,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 129408,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S2-": 4887273
+   },
+   "country_top10": {
+    "India": 2312565,
+    "US": 1871330,
+    "France": 703378
+   },
+   "name_len": {
+    "mean": 25.7,
+    "p50": 25.0,
+    "p99": 49.0,
+    "max": 102
+   },
+   "address_len": {
+    "mean": 51.8,
+    "p50": 43.0,
+    "p99": 120.0,
+    "max": 269
+   },
+   "sample": [
+    {
+     "entity_id": "S2-501974872",
+     "business_name": "यूनाइटेड केयर प्राइवेट लिमिटेड",
+     "business_address": "OFFICE NO. 65E HARINAGAR, ASHRAM, NEW DELHI, SOUTH DELHI, Delhi",
+     "country": "India"
+    },
+    {
+     "entity_id": "S2-14313483",
+     "business_name": "LAMINAR [FILMS]",
+     "business_address": null,
+     "country": "India"
+    },
+    {
+     "entity_id": "S2-530494941",
+     "business_name": "Andaman Private Fashion Limited",
+     "business_address": "#79 C/O CHARANDAS ATMARAM, KARHADE AT ILADA, ARJUNI MORGAON, Maharashtra",
+     "country": "India"
+    }
+   ]
+  },
+  "test_source3": {
+   "rows": 5082316,
+   "columns": [
+    "row_idx",
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country"
+   ],
+   "nulls": {
+    "row_idx": 0,
+    "entity_id": 0,
+    "business_name": 0,
+    "business_address": 136098,
+    "country": 0
+   },
+   "dup_entity_ids": 0,
+   "id_prefixes": {
+    "S3-": 5082316
+   },
+   "country_top10": {
+    "India": 2405000,
+    "US": 1945701,
+    "France": 731615
+   },
+   "name_len": {
+    "mean": 25.7,
+    "p50": 25.0,
+    "p99": 50.0,
+    "max": 103
+   },
+   "address_len": {
+    "mean": 50.1,
+    "p50": 44.0,
+    "p99": 118.0,
+    "max": 267
+   },
+   "sample": [
+    {
+     "entity_id": "S3-360160511",
+     "business_name": "école De La  Salon & Associés",
+     "business_address": "2 Rue De Rouen, Lille",
+     "country": "France"
+    },
+    {
+     "entity_id": "S3-999010328",
+     "business_name": "Zar0va Enerprises-LLC",
+     "business_address": "Arizona, 007550 Legacy Blvd, Scottsdale Kachina",
+     "country": "US"
+    },
+    {
+     "entity_id": "S3-553261313",
+     "business_name": "Pioneer  Properties Automobiles Private Limited",
+     "business_address": "C/o Gyan Singh Dhana Ram Budeen (G-40), Mahendragarh, HR",
+     "country": "India"
+    }
+   ]
+  }
+ },
+ "ground_truth": {
+  "gt_rows": 2206821,
+  "train_s1_rows": 2206821,
+  "s1_missing_from_gt": 0,
+  "dup_s1_rows_in_gt": 0,
+  "singleton_frac": 0.0558,
+  "match_list_size_dist": {
+   "0": 123247,
+   "1": 119157,
+   "2": 375212,
+   "3": 530841,
+   "4": 484115,
+   "5": 321957,
+   "6": 164868,
+   "7": 63968,
+   "8": 18680,
+   "9": 4205,
+   "10": 571
+  },
+  "total_pairs": 7638365,
+  "pairs_to_S2": 3693619,
+  "pairs_to_S3": 3944746,
+  "cand_ids_claimed_by_multiple_s1": 0,
+  "gt_ids_not_found_in_sources": 0,
+  "frac_S2_records_matched": 0.7336,
+  "frac_S3_records_matched": 0.7463,
+  "pair_country_agreement": 1.0,
+  "sample_rows": [
+   {
+    "source1_entity_id": "S1-332652881",
+    "matched_entity_ids": "S2-403571744,S2-549024995,S3-884734681,S3-94705615"
+   },
+   {
+    "source1_entity_id": "S1-840286806",
+    "matched_entity_ids": "S2-952638411,S3-15395034"
+   },
+   {
+    "source1_entity_id": "S1-886664473",
+    "matched_entity_ids": "S2-211688464,S2-771622792,S2-389340958,S3-766048242"
+   }
+  ]
+ }
+}
