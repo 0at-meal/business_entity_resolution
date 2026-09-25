@@ -1,32 +1,56 @@
-"""Multi-pass blocking over stage-01 records. Every pass runs within one country.
+"""Multi-pass blocking over stage-01 records (v3). Every pass runs within one country.
 
 Each pass maps records to hashed keys; S1 and S2/S3 records sharing a key become candidates.
-To keep volume bounded, token-based passes only use each record's RAREST tokens (document
-frequency counted within the country), and keys shared by more than `cap` S2/S3 records are skipped.
-The union keeps a bitmask saying which passes produced each pair.
+Keys shared by more than `cap` S2/S3 records are skipped. The union keeps a bitmask of passes.
+
+v3 changes (from T09 error analysis):
+  * rare-token passes ignore tokens that occur only once in the country (typo-made tokens
+    can never match, but used to crowd out useful rare tokens)
+  * digit-for-letter swaps inside words are undone for keys (g1obal -> global, 8lue -> blue)
+  * number keys also use leading-digit-truncated variants (704 <-> 04); the model decides
+  * new pass name_prefix: state + first 3 letters of the first two name words
 """
 import gc
 import time
 
 import polars as pl
 
+from .normalize import num_ext
+
 PASSES = [  # (name, cap) ; bit i = 1 << i
     ("name_exact", 300),
     ("num_name", 50),
     ("num_addr", 50),
     ("name_pair", 50),
+    ("name_prefix", 50),
 ]
-RARE_NAME = 2   # rarest name tokens per record used by num_name
-RARE_ADDR = 2   # rarest address tokens per record used by num_addr
-RARE_PAIR = 3   # rarest name tokens per record combined pairwise by name_pair
+RARE_NAME = 2
+RARE_ADDR = 2
+RARE_PAIR = 3
+DIGIT_FIX = {"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "8": "b"}
+
+
+def _fix_core(col="name_core"):
+    el = pl.element()
+    fixed = el
+    for d, ch in DIGIT_FIX.items():
+        fixed = fixed.str.replace_all(d, ch, literal=True)
+    return pl.col(col).list.eval(pl.when(el.str.contains("[a-z]")).then(fixed).otherwise(el))
+
+
+def prepare(df):
+    return (df.with_columns(core_f=_fix_core())
+              .with_columns(k1f=pl.col("core_f").list.join(""),
+                            k2f=pl.col("core_f").list.sort().list.join(" "),
+                            numx=num_ext(pl.col("num"))))
 
 
 def _rarest(df, col, n):
-    """(id, tok) for each record's n rarest tokens of length >= 3 (ties broken alphabetically)."""
+    """(id, tok): each record's n rarest tokens (len >= 3) among tokens seen at least twice."""
     ex = (df.select("id", tok=pl.col(col).list.unique())
             .explode("tok", empty_as_null=True).drop_nulls("tok")
             .filter(pl.col("tok").str.len_chars() >= 3))
-    freq = ex.group_by("tok").agg(pl.len().alias("f"))
+    freq = ex.group_by("tok").agg(pl.len().alias("f")).filter(pl.col("f") >= 2)
     return (ex.join(freq, on="tok")
               .sort(["id", "f", "tok"])
               .group_by("id", maintain_order=True).head(n)
@@ -34,20 +58,19 @@ def _rarest(df, col, n):
 
 
 def _keys(df, kind):
-    """df: id, k1, k2, name_core, num, addr_toks (one country, all sources). Returns (id, key:u64)."""
     if kind == "name_exact":
-        k = (df.select("id", key=pl.concat_list([pl.col("k1"), pl.col("k2")]))
+        k = (df.select("id", key=pl.concat_list(["k1", "k2", "k1f", "k2f"]).list.unique())
                .explode("key", empty_as_null=True)
                .filter(pl.col("key").is_not_null() & (pl.col("key") != "")))
     elif kind in ("num_name", "num_addr"):
-        col, n = ("name_core", RARE_NAME) if kind == "num_name" else ("addr_toks", RARE_ADDR)
+        col, n = ("core_f", RARE_NAME) if kind == "num_name" else ("addr_toks", RARE_ADDR)
         toks = _rarest(df, col, n)
-        nums = (df.select("id", "num").explode("num", empty_as_null=True).drop_nulls("num")
-                  .unique())
+        nums = (df.select("id", num="numx").explode("num", empty_as_null=True)
+                  .drop_nulls("num").unique())
         k = (toks.join(nums, on="id")
                  .select("id", key=pl.col("num").cast(pl.String) + "|" + pl.col("tok")))
     elif kind == "name_pair":
-        rare = _rarest(df, "name_core", RARE_PAIR).sort(["id", "tok"])
+        rare = _rarest(df, "core_f", RARE_PAIR).sort(["id", "tok"])
         cnt = rare.group_by("id").agg(pl.len().alias("n"))
         single = (rare.join(cnt.filter(pl.col("n") == 1), on="id", how="semi")
                       .select("id", key=pl.col("tok")))
@@ -57,6 +80,12 @@ def _keys(df, kind):
                       .filter(pl.col("pos") < pl.col("pos_r"))
                       .select("id", key=pl.col("tok") + "|" + pl.col("tok_r")))
         k = pl.concat([single, pairs])
+    elif kind == "name_prefix":
+        a = pl.col("core_f").list.get(0, null_on_oob=True).str.slice(0, 3)
+        b = pl.col("core_f").list.get(1, null_on_oob=True).str.slice(0, 3)
+        k = (df.select("id", a=a, b=b, st=pl.col("state").fill_null(""))
+               .filter(pl.col("a").is_not_null() & (pl.col("a").str.len_chars() >= 2))
+               .select("id", key=pl.col("st") + "|" + pl.col("a") + "|" + pl.col("b").fill_null("")))
     else:
         raise ValueError(kind)
     return k.select("id", key=pl.col("key").hash()).unique()
@@ -81,7 +110,8 @@ def _rss():
 
 
 def generate(df, passes=PASSES, log=print):
-    """df: stage-01 rows of ONE country. Returns (candidates s1,c,mask:u8 ; per-pass stats)."""
+    """df: stage-01 rows of ONE country (id, src, k1, k2, name_core, num, addr_toks, state)."""
+    df = prepare(df)
     src = df.select("id", "src")
     parts, stats = [], []
     for bit, (kind, cap) in enumerate(passes):

@@ -15,20 +15,21 @@ import numpy as np
 import polars as pl
 
 import t04_val_baselines as t04
-from ber.decide import decide, tune
+from ber.decide import decide, decide_expected, tune, tune_expected
 from ber.features import FEATS, REC_COLS, context, full_chunked, phase_a
 from ber.ids import id_code
 from ber.metrics import explode_ids, per_entity_f, summarize
 from ber.split import VAL_FOLD, fold_expr
 from ber.stage01 import find_checkpoint
 
-TOPK = 30            # candidates kept per S1 after the cheap pre-filter
-TRAIN_FRAC = 0.30    # share of training-fold S1 entities used to train the model
-KEEP_P = 0.05        # test pairs with p below this are discarded before decisions
-PARAMS = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_in_leaf=200,
+TAG = "t10"          # version tag: outputs go to output_{TAG}/, artifacts/*_{TAG}.*
+TOPK = 50            # candidates kept per S1 after the cheap pre-filter (T09: 30 -> 50 recovers ~0.8%)
+TRAIN_FRAC = 0.35    # share of training-fold S1 entities used to train the model
+KEEP_P = 0.02        # test pairs with p below this are discarded before decisions
+PARAMS = dict(objective="binary", learning_rate=0.1, num_leaves=127, min_data_in_leaf=200,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, num_threads=0, seed=7)
-ROUNDS = 1500
+ROUNDS = 2500
 
 
 def find_cand(split, country, work):
@@ -113,7 +114,7 @@ def main(data, work="/kaggle/working"):
     gc.collect()
     model = lgb.train(PARAMS, dtr, ROUNDS, valid_sets=[dv],
                       callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)])
-    model.save_model(f"{work}/artifacts/lgbm_t08.txt")
+    model.save_model(f"{work}/artifacts/lgbm_{TAG}.txt")
     imp = pl.DataFrame({"feature": FEATS,
                         "gain": model.feature_importance("gain")}).sort("gain", descending=True)
     print(imp.with_columns((pl.col("gain") / pl.col("gain").sum()).alias("share")).head(20))
@@ -122,13 +123,23 @@ def main(data, work="/kaggle/working"):
     pv = Dv.select("s1", "c").with_columns(
         p=pl.Series(model.predict(Dv.select(FEATS).to_numpy(), num_threads=0)).cast(pl.Float32))
     del Dv
+    pv.write_parquet(f"{work}/artifacts/val_pred_{TAG}.parquet")
     thr, rel, grid = tune(pv, gt, val)
-    print(grid.head(8).select("thr", "rel", "F0.5", "P_avg", "R_avg", "pred_nonempty", "F_singletons"))
-    e = per_entity_f(decide(pv, thr, rel), gt, val)
+    print("global threshold rule (top rows):")
+    print(grid.head(5).select("thr", "rel", "F0.5", "P_avg", "R_avg", "pred_nonempty", "F_singletons"))
+    alpha, floor, grid_e = tune_expected(pv, gt, val)
+    print("expected-F rule (top rows):")
+    print(grid_e.head(5).select("alpha", "floor", "F0.5", "P_avg", "R_avg", "pred_nonempty", "F_singletons"))
+    f_thr = grid.row(0, named=True)["F0.5"]
+    f_exp = grid_e.row(0, named=True)["F0.5"]
+    use_expected = f_exp > f_thr
+    chooser = (lambda df: decide_expected(df, alpha, floor)) if use_expected else (lambda df: decide(df, thr, rel))
+    print(f"chosen rule: {'expected-F alpha=%s floor=%s' % (alpha, floor) if use_expected else 'threshold thr=%s rel=%s' % (thr, rel)}")
+    e = per_entity_f(chooser(pv), gt, val)
     print(pl.concat([summarize(e).with_columns(country=pl.lit("ALL")), summarize(e, by="country")],
                     how="diagonal_relaxed").select("country", "n", "F0.5", "P_avg", "R_avg",
                                                    "pred_nonempty", "F_singletons", "F_nonsingle"))
-    print(f"chosen thr={thr} rel={rel}   (B3 heuristic reference: 0.6522)  {t04.mem()}")
+    print(f"(T08 reference: 0.9583)  {t04.mem()}")
     del pv, e
     gc.collect()
 
@@ -154,8 +165,10 @@ def main(data, work="/kaggle/working"):
         del F, p
         gc.collect()
     cand_t = pl.concat(cands)
-    pred_t = decide(pl.concat(preds), thr, rel)
-    out_dir = f"{work}/output_t08"
+    all_p = pl.concat(preds)
+    all_p.write_parquet(f"{work}/artifacts/test_pred_{TAG}.parquet")
+    pred_t = chooser(all_p)
+    out_dir = f"{work}/output_{TAG}"
     os.makedirs(out_dir, exist_ok=True)
     t04.write_lists(test_s1, cand_t, idmap, "candidate_entity_ids", f"{out_dir}/candidate_pairs.tsv")
     t04.write_lists(test_s1, pred_t, idmap, "matched_entity_ids", f"{out_dir}/matching_results.tsv")

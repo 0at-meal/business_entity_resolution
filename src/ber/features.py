@@ -22,7 +22,9 @@ CTX = ["n_cand_s1", "q_rank_s1", "q_gap_s1", "n_cand_c", "q_rank_c", "q_gap_c"]
 FULL = ["k1_eq", "k1_empty", "n_jw", "n_tsort", "n_partial", "core_j", "core_cont", "a_core_n",
         "b_core_n", "addr_j", "addr_cont", "a_addr_n", "b_addr_n", "a_ratio", "num_inter",
         "num_trunc", "a_num_n", "b_num_n", "state_rel", "b_addr_null", "b_nonlatin", "b_src",
-        "m0", "m1", "m2", "m3"]
+        "m0", "m1", "m2", "m3", "m4",
+        # v2 (T10): residual words = words one side has that the other lacks
+        "n_resid_ratio", "a_resid_n", "b_resid_n", "addr_resid_ratio", "num_conflict"]
 FEATS = CHEAP + CTX + FULL
 
 
@@ -48,11 +50,17 @@ def attach(pairs, recs):
 
 
 def cheap(p):
+    """Quick score q in [0, 2]. When either address is missing, the name score counts twice
+    (otherwise address-less records sink below the top-K cut - see T09)."""
+    p = p.with_columns(_anull=pl.col("a_addr_str").fill_null("").eq("")
+                       | pl.col("b_addr_str").fill_null("").eq(""))
     p = p.with_columns(n_ratio=_rf(p, "a_k1", "b_k1", fuzz.ratio),
                        n_tsr=_rf(p, "a_name_str", "b_name_str", fuzz.token_set_ratio),
                        a_tsr=_rf(p, "a_addr_str", "b_addr_str", fuzz.token_set_ratio))
-    return p.with_columns(q=((pl.max_horizontal("n_ratio", "n_tsr") + pl.col("a_tsr")) / 100.0)
-                          .cast(pl.Float32))
+    nbest = pl.max_horizontal("n_ratio", "n_tsr")
+    return p.with_columns(
+        q=((nbest + pl.when(pl.col("_anull")).then(nbest).otherwise(pl.col("a_tsr"))) / 100.0)
+        .cast(pl.Float32))
 
 
 def phase_a(cand, recs, k, chunk=40_000):
@@ -101,12 +109,22 @@ def full(p, recs):
                     .when(pl.col("a_state") == pl.col("b_state")).then(1).otherwise(0),
         b_addr_null=pl.col("b_addr_null"), b_nonlatin=pl.col("b_nonlatin"), b_src=pl.col("b_src"),
         m0=(pl.col("mask") & 1) > 0, m1=(pl.col("mask") & 2) > 0,
-        m2=(pl.col("mask") & 4) > 0, m3=(pl.col("mask") & 8) > 0,
+        m2=(pl.col("mask") & 4) > 0, m3=(pl.col("mask") & 8) > 0, m4=(pl.col("mask") & 16) > 0,
+        _nra=pl.col("a_name_core").list.set_difference(pl.col("b_name_core")).list.join(" "),
+        _nrb=pl.col("b_name_core").list.set_difference(pl.col("a_name_core")).list.join(" "),
+        _ara=pl.col("a_addr_toks").list.set_difference(pl.col("b_addr_toks")).list.join(" "),
+        _arb=pl.col("b_addr_toks").list.set_difference(pl.col("a_addr_toks")).list.join(" "),
+        a_resid_n=pl.col("a_name_core").list.set_difference(pl.col("b_name_core")).list.len(),
+        b_resid_n=pl.col("b_name_core").list.set_difference(pl.col("a_name_core")).list.len(),
     )
+    p = p.with_columns(num_conflict=(pl.col("a_num_n") > 0) & (pl.col("b_num_n") > 0)
+                       & (pl.col("num_inter") == 0) & ~pl.col("num_trunc"))
     p = p.with_columns(n_jw=_rf(p, "a_k1", "b_k1", JaroWinkler.normalized_similarity),
                        n_tsort=_rf(p, "a_name_str", "b_name_str", fuzz.token_sort_ratio),
                        n_partial=_rf(p, "a_k1", "b_k1", fuzz.partial_ratio),
-                       a_ratio=_rf(p, "a_addr_str", "b_addr_str", fuzz.ratio))
+                       a_ratio=_rf(p, "a_addr_str", "b_addr_str", fuzz.ratio),
+                       n_resid_ratio=_rf(p, "_nra", "_nrb", fuzz.ratio),
+                       addr_resid_ratio=_rf(p, "_ara", "_arb", fuzz.ratio))
     return p.select("s1", "c", *[pl.col(f).fill_null(0).cast(pl.Float32) for f in FEATS])
 
 

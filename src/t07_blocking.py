@@ -18,7 +18,7 @@ from ber.metrics import explode_ids
 from ber.split import VAL_FOLD, fold_expr
 from ber.stage01 import find_checkpoint
 
-COLS = ["id", "src", "country", "k1", "k2", "name_core", "num", "addr_toks"]
+COLS = ["id", "src", "country", "k1", "k2", "name_core", "num", "addr_toks", "state"]
 
 
 def eval_country(cand, gv, val_ids, country):
