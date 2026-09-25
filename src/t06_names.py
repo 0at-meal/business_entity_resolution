@@ -31,6 +31,7 @@ CONFIGS = {  # name: (k1 column, k2 column, number column)
 def load(data, split):
     frames = []
     for s in ("1", "2", "3"):
+        t1 = time.time()
         df = pl.read_parquet(f"{data}/{split}_source{s}.parquet",
                              columns=["entity_id", "business_name", "business_address", "country"])
         df = (df.select(id=id_code(),
@@ -46,6 +47,7 @@ def load(data, split):
                 .with_columns(k1_v0=pl.col("core0").list.join(""),
                               k2_v0=pl.col("core0").list.sort().list.join(" "))
                 .drop("core0"))
+        print(f"  loaded {split}_source{s}: {df.height:,} rows in {time.time() - t1:.0f}s {t04.mem()}", flush=True)
         frames.append(df)
         del df
         gc.collect()

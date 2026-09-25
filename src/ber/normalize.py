@@ -75,22 +75,22 @@ def clean_name_v1(e):
     return (e.str.normalize("NFKD")
              .str.replace_all(r"(\p{Latin})\p{Mn}+", "$1")
              .str.to_lowercase()
-             .str.replace_all(r"^.*?\b(?:formerly|fka|f/k/a)\b[:\s]*", "")   # keep the former name
-             .str.replace_all(r"\s\b(?:dba|d/b/a|aka|a/k/a|t/a)\b.*$", "")   # keep the legal name
-             .str.replace_all(r"\bm/s\b", " ")
-             .str.replace_all(r"https?://|\bwww\.", " ")
-             .str.replace_all(r"\.(?:com|net|org|co\.in|in|fr|biz|info|us)\b", " ")
+             .str.replace_all(r"^.*?(?-u:\b)(?:formerly|fka|f/k/a)(?-u:\b)[:\s]*", "")   # keep the former name
+             .str.replace_all(r"\s(?-u:\b)(?:dba|d/b/a|aka|a/k/a|t/a)(?-u:\b).*$", "")   # keep the legal name
+             .str.replace_all(r"(?-u:\b)m/s(?-u:\b)", " ")
+             .str.replace_all(r"https?://|(?-u:\b)www\.", " ")
+             .str.replace_all(r"\.(?:com|net|org|co\.in|in|fr|biz|info|us)(?-u:\b)", " ")
              .str.replace_all(r"[&+@]", " ")
              .str.replace_all(r"\.", "")                                     # S.A.R.L. -> sarl
              .str.replace_all(r"[^\p{L}\p{M}\p{N}]+", " ")
-             .str.replace_all(r"\bs ?a ?r ?l\b", "sarl")                      # spaced-out legal forms
-             .str.replace_all(r"\bs ?a ?s ?u\b", "sasu")
-             .str.replace_all(r"\bs ?a ?s\b", "sas")
-             .str.replace_all(r"\be ?u ?r ?l\b", "eurl")
-             .str.replace_all(r"\bp ?l ?l ?c\b", "pllc")
-             .str.replace_all(r"\bl ?l ?c\b", "llc")
-             .str.replace_all(r"\bl ?l ?p\b", "llp")
-             .str.replace_all(r"\bp ?c\b", "pc")
+             .str.replace_all(r"(?-u:\b)s ?a ?r ?l(?-u:\b)", "sarl")                      # spaced-out legal forms
+             .str.replace_all(r"(?-u:\b)s ?a ?s ?u(?-u:\b)", "sasu")
+             .str.replace_all(r"(?-u:\b)s ?a ?s(?-u:\b)", "sas")
+             .str.replace_all(r"(?-u:\b)e ?u ?r ?l(?-u:\b)", "eurl")
+             .str.replace_all(r"(?-u:\b)p ?l ?l ?c(?-u:\b)", "pllc")
+             .str.replace_all(r"(?-u:\b)l ?l ?c(?-u:\b)", "llc")
+             .str.replace_all(r"(?-u:\b)l ?l ?p(?-u:\b)", "llp")
+             .str.replace_all(r"(?-u:\b)p ?c(?-u:\b)", "pc")
              .str.strip_chars())
 
 
