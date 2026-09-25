@@ -38,3 +38,11 @@ def addr_numbers(e):
              .list.eval(pl.element().str.strip_chars_start("0"))
              .list.eval(pl.element().filter(pl.element() != ""))
              .list.unique())
+
+
+def addr_numbers_int(e):
+    """Unique digit groups as UInt32 (leading zeros vanish; very long runs keep their last 9 digits)."""
+    return (e.str.extract_all(r"\d+")
+             .list.eval(pl.element().str.slice(-9).cast(pl.UInt32, strict=False))
+             .list.eval(pl.element().filter(pl.element() > 0))
+             .list.unique())
