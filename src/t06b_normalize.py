@@ -18,6 +18,7 @@ from ber.ids import id_code
 from ber.metrics import explode_ids, per_entity_f, summarize
 from ber.normalize import B, clean_name_v1, learn_native_dict, num_ext
 from ber.split import VAL_FOLD, fold_expr
+from ber.address import apply_native_state, learn_native_state
 from ber.stage01 import build_base, finalize
 
 MARKERS = {"formerly": ["formerly known as", "formerly"], "fka": ["fka", "f/k/a"],
@@ -81,12 +82,43 @@ def marker_analysis(data, gt):
     return after, before
 
 
-# ---------------------------------------------------------------- 4. address eval
-def address_eval(tr, cand, gt, val):
+# ---------------------------------------------------------------- helpers
+def raw_for_ids(data, split, ids):
+    """Raw name/address for a small set of ids (for printing samples)."""
+    frames = []
+    for s in "123":
+        frames.append(pl.read_parquet(f"{data}/{split}_source{s}.parquet",
+                                      columns=["entity_id", "business_name", "business_address"])
+                        .with_columns(id=id_code()).filter(pl.col("id").is_in(ids)))
+    return pl.concat(frames).drop("entity_id")
+
+
+def print_samples(data, tr):
+    ids = []
+    for c in sorted(tr["country"].unique().to_list()):
+        sub = tr.filter((pl.col("country") == c) & ~pl.col("addr_null"))
+        ids += sub.sample(min(5, sub.height), seed=5)["id"].to_list()
+    nat = tr.filter(pl.col("addr_native").list.len() > 0)
+    ids += nat.sample(min(4, nat.height), seed=5)["id"].to_list()
+    raw = raw_for_ids(data, "train", ids)
+    print(tr.filter(pl.col("id").is_in(ids)).join(raw, on="id")
+            .select("country", pl.col("business_address").str.slice(0, 70).alias("raw"), "state",
+                    pl.col("addr_toks").list.join(" ").str.slice(0, 60).alias("addr_toks")))
+
+
+# ---------------------------------------------------------------- address eval
+def address_eval(data, feats, cand, gt, val):
     vc = cand.join(val, on="s1", how="semi").select("s1", "c", "num_ok")
     lab = (vc.join(gt.with_columns(y=pl.lit(True)), on=["s1", "c"], how="left")
              .with_columns(pl.col("y").fill_null(False)))
-    f = tr.select("id", "country", "addr_toks", "state", "num", "v0_toks")
+    need = pl.concat([lab.select(pl.col("s1").alias("id")), lab.select(pl.col("c").alias("id"))]).unique()
+    raw = pl.concat([pl.read_parquet(f"{data}/train_source{s}.parquet",
+                                     columns=["entity_id", "business_address"])
+                       .with_columns(id=id_code()).join(need, on="id", how="semi")
+                     for s in "123"])
+    v0 = raw.select("id", v0_toks=pl.col("business_address").str.to_lowercase()
+                    .str.replace_all(r"[^\p{L}\p{N}]+", " ").str.strip_chars().str.split(" "))
+    f = feats.join(need, on="id", how="semi").join(v0, on="id", how="left")
     a = f.rename({c: f"a_{c}" for c in f.columns})
     b = f.drop("country").rename({c: f"b_{c}" for c in f.columns if c != "country"})
     P = (lab.join(a, left_on="s1", right_on="a_id").join(b, left_on="c", right_on="b_id")
@@ -147,41 +179,51 @@ def main(data, work="/kaggle/working"):
     print(f"keep text AFTER: {after}\nkeep text BEFORE: {before}  {t04.mem()}")
     gc.collect()
 
-    t04.section("2. BUILD TRAIN STAGE-01")
-    base = build_base(data, "train", after, before, keep_raw=True)
+    t04.section("2. BUILD + SAVE TRAIN STAGE-01")
+    base = build_base(data, "train", after, before)
     s1 = (base.filter(pl.col("src") == 1)
               .select(pl.col("id").alias("s1"), "country", fold_expr("entity_id")))
     val = s1.filter(pl.col("fold") == VAL_FOLD).select("s1", "country")
     gt_learn = gt.join(s1.filter(pl.col("fold") != VAL_FOLD).select("s1"), on="s1", how="semi")
     d, n_al = learn_native_dict(base.select("id", pl.col("name_toks").alias("toks"), "nonlatin"), gt_learn)
     d.write_parquet(f"{work}/artifacts/native_dict_v1.parquet")
-    print(f"native dictionary: {d.height:,} entries from {n_al:,} aligned pairs (folds != {VAL_FOLD})")
+    print(f"native name dictionary: {d.height:,} entries from {n_al:,} aligned pairs (folds != {VAL_FOLD})")
     tr, stats = finalize(base, d)
     del base
     gc.collect()
-    print(f"train native coverage: {stats}  {t04.mem()}")
-
-    print("\naddress samples:")
-    samp = []
-    for c in sorted(tr["country"].unique().to_list()):
-        sub = tr.filter((pl.col("country") == c) & ~pl.col("addr_null"))
-        samp.append(sub.sample(min(5, sub.height), seed=5)
-                       .select("country", pl.col("business_address").str.slice(0, 70).alias("raw"),
-                               "state", pl.col("addr_toks").list.join(" ").str.slice(0, 60).alias("addr_toks")))
-    print(pl.concat(samp))
-    print("\nmarker name samples:")
-    mk = tr.filter(pl.col("business_name").str.to_lowercase()
-                   .str.contains(rf"{B}(?:formerly|fka|dba|aka|t/a){B}"))
-    print(mk.sample(min(8, mk.height), seed=5)
-            .select(pl.col("business_name").alias("raw"), pl.col("name_toks").list.join(" ").alias("tokens"),
-                    "k1"))
-    tr = tr.with_columns(v0_toks=pl.col("business_address").str.to_lowercase()
-                         .str.replace_all(r"[^\p{L}\p{N}]+", " ").str.strip_chars().str.split(" "))
-    tr = tr.drop("business_address", "business_name")
+    print(f"train native name coverage: {stats}  {t04.mem()}")
+    st_map = learn_native_state(tr.select("id", "src", "state", "addr_native"), gt_learn)
+    st_map.write_parquet(f"{work}/artifacts/native_state_v1.parquet")
+    print(f"native state map: {st_map.height} tokens; top: "
+          + "  ".join(f"{t}->{s}" for t, s in st_map.select("token", "state").head(12).iter_rows()))
+    tr = apply_native_state(tr, st_map)
+    print_samples(data, tr)
     state_coverage(tr, "TRAIN")
+    tr.write_parquet(f"{work}/stage01/train.parquet", compression="zstd")
+    print(f"wrote {work}/stage01/train.parquet ({os.path.getsize(f'{work}/stage01/train.parquet') / 1e6:.0f} MB)")
+    del tr
+    gc.collect()
 
-    t04.section("3. B3 REPRODUCTION WITH STAGE-01 KEYS (validation)")
-    cand, _ = t04.key_candidates(tr.select("id", "src", "country", "k1", "k2", "num", "addr_null"))
+    t04.section("3. BUILD + SAVE TEST STAGE-01")
+    base_t = build_base(data, "test", after, before)
+    te, stats_t = finalize(base_t, d)
+    del base_t
+    gc.collect()
+    te = apply_native_state(te, st_map)
+    print(f"TEST native name coverage: {stats_t}")
+    state_coverage(te, "TEST")
+    te.write_parquet(f"{work}/stage01/test.parquet", compression="zstd")
+    print(f"wrote {work}/stage01/test.parquet ({os.path.getsize(f'{work}/stage01/test.parquet') / 1e6:.0f} MB)"
+          f"  {t04.mem()}")
+    del te
+    gc.collect()
+
+    t04.section("4. B3 REPRODUCTION WITH STAGE-01 KEYS (validation)")
+    keys = pl.read_parquet(f"{work}/stage01/train.parquet",
+                           columns=["id", "src", "country", "k1", "k2", "num", "addr_null"])
+    cand, _ = t04.key_candidates(keys)
+    del keys
+    gc.collect()
     pred = t04.baselines(cand)["B3_namekey_num_excl"]
     e = per_entity_f(pred, gt, val)
     vc = cand.join(val, on="s1", how="semi")
@@ -195,25 +237,10 @@ def main(data, work="/kaggle/working"):
     del pred, e, vc, gv
     gc.collect()
 
-    t04.section("4. ADDRESS SIGNALS ON NAME-KEY CANDIDATES (validation, AUC)")
-    address_eval(tr, cand, gt, val)
-    del cand
-    gc.collect()
-
-    t04.section("5. SAVE CHECKPOINTS")
-    tr.drop("v0_toks").write_parquet(f"{work}/stage01/train.parquet", compression="zstd")
-    del tr
-    gc.collect()
-    base_t = build_base(data, "test", after, before)
-    te, stats_t = finalize(base_t, d)
-    del base_t
-    gc.collect()
-    print(f"TEST native coverage: {stats_t}")
-    state_coverage(te, "TEST")
-    te.write_parquet(f"{work}/stage01/test.parquet", compression="zstd")
-    for f in ("train", "test"):
-        p = f"{work}/stage01/{f}.parquet"
-        print(f"wrote {p} ({os.path.getsize(p) / 1e6:.0f} MB)")
+    t04.section("5. ADDRESS SIGNALS ON NAME-KEY CANDIDATES (validation, AUC)")
+    feats = pl.read_parquet(f"{work}/stage01/train.parquet",
+                            columns=["id", "country", "addr_toks", "state", "num"])
+    address_eval(data, feats, cand, gt, val)
     print(f"\ndone in {time.time() - t0:.0f}s {t04.mem()}")
 
 

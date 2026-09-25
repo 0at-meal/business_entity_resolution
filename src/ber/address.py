@@ -78,12 +78,15 @@ FR_STOP = COMMON_STOP | {"de", "la", "le", "les", "du", "des", "d", "l", "et", "
                          "france", "cedex", "n", "no", "au", "aux", "en"}
 
 COUNTRY_CFG = {
-    "US": dict(names=US_STATES, codes=set(US_STATES.values()), aliases={}, abbr=US_ABBR, stop=US_STOP),
+    # prefer: which signal wins when both a state name and a state code are present
+    "US": dict(names=US_STATES, codes=set(US_STATES.values()), aliases={}, abbr=US_ABBR, stop=US_STOP,
+               prefer="code"),    # 'Fort Washington, MD' -> md, not wa
     "India": dict(names=IN_STATES, codes=set(IN_STATES.values()) | set(IN_CODE_ALIASES),
-                  aliases=IN_CODE_ALIASES, abbr=IN_ABBR, stop=IN_STOP),
-    "France": dict(names=FR_REGIONS, codes=set(), aliases={}, abbr=FR_ABBR, stop=FR_STOP),
+                  aliases=IN_CODE_ALIASES, abbr=IN_ABBR, stop=IN_STOP,
+                  prefer="name"),  # 'ka' is often Hindi, not Karnataka
+    "France": dict(names=FR_REGIONS, codes=set(), aliases={}, abbr=FR_ABBR, stop=FR_STOP, prefer="name"),
 }
-GENERIC_CFG = dict(names={}, codes=set(), aliases={}, abbr={}, stop=COMMON_STOP)
+GENERIC_CFG = dict(names={}, codes=set(), aliases={}, abbr={}, stop=COMMON_STOP, prefer="name")
 
 
 def clean_addr_base(e):
@@ -109,7 +112,7 @@ def add_address(df, country, col="business_address"):
 
     if cfg["names"]:
         alt = _alternation(cfg["names"])
-        state_from_name = (pl.col("_base").str.extract(alt, 1)
+        state_from_name = (pl.col("_base").str.extract_all(alt).list.last()
                            .replace_strict(cfg["names"], default=None, return_dtype=pl.String))
         stripped = pl.col("_base").str.replace_all(alt, " ")
     else:
@@ -130,7 +133,9 @@ def add_address(df, country, col="business_address"):
     abbr, stop, codes = cfg["abbr"], list(cfg["stop"]), list(cfg["codes"])
     el = pl.element()
     mapped = pl.col("_raw_toks").list.eval(el.replace(abbr)) if abbr else pl.col("_raw_toks")
-    df = df.with_columns(state=pl.coalesce("_state_name", code_tok), _toks=mapped)
+    state = (pl.coalesce(code_tok, "_state_name") if cfg["prefer"] == "code"
+             else pl.coalesce("_state_name", code_tok))
+    df = df.with_columns(state=state, _toks=mapped)
     keep = (~el.is_in(stop) & ~el.str.contains(r"^\d+$")
             & (el.str.len_chars() > 1) & ~el.str.contains(NONLATIN_RE))
     if codes:
@@ -138,5 +143,38 @@ def add_address(df, country, col="business_address"):
     df = df.with_columns(
         addr_toks=pl.col("_toks").list.eval(el.filter(keep)).list.unique().list.sort(),
         addr_str=pl.col("_toks").list.join(" "),
+        addr_native=pl.col("_toks").list.eval(el.filter(el.str.contains(NONLATIN_RE))).list.unique(),
     )
     return df.drop("_base", "_state_name", "_raw_toks", "_toks")
+
+
+def learn_native_state(recs, pairs, min_support=20, min_share=0.9):
+    """Learn native-script address token -> state code from true pairs (candidate state unknown,
+    S1 state known). recs: id, src, state, addr_native. pairs: (s1, c)."""
+    a = (recs.filter((pl.col("src") == 1) & pl.col("state").is_not_null())
+             .select(pl.col("id").alias("s1"), pl.col("state").alias("s1_state")))
+    b = (recs.filter(pl.col("state").is_null() & (pl.col("addr_native").list.len() > 0))
+             .select(pl.col("id").alias("c"), "addr_native"))
+    ex = (pairs.join(b, on="c").join(a, on="s1")
+               .explode("addr_native", empty_as_null=True).drop_nulls("addr_native"))
+    counts = ex.group_by("addr_native", "s1_state").agg(pl.len().alias("n"))
+    return (counts.group_by("addr_native")
+                  .agg(pl.col("s1_state").sort_by("n", descending=True).first().alias("state"),
+                       pl.col("n").max().alias("support"), pl.col("n").sum().alias("total"))
+                  .with_columns(share=pl.col("support") / pl.col("total"))
+                  .filter((pl.col("support") >= min_support) & (pl.col("share") >= min_share))
+                  .select(pl.col("addr_native").alias("token"), "state", "support", "share")
+                  .sort("support", descending=True))
+
+
+def apply_native_state(recs, m):
+    """Fill missing states from native-script address tokens using a learned map."""
+    ex = (recs.filter(pl.col("state").is_null() & (pl.col("addr_native").list.len() > 0))
+              .select("id", "addr_native")
+              .explode("addr_native", empty_as_null=True)
+              .join(m.select(pl.col("token").alias("addr_native"), pl.col("state").alias("st")),
+                    on="addr_native", how="inner"))
+    found = ex.group_by("id").agg(pl.col("st").mode().first().alias("st_native"))
+    return (recs.join(found, on="id", how="left")
+                .with_columns(state=pl.coalesce("state", "st_native"))
+                .drop("st_native"))
