@@ -70,33 +70,46 @@ def is_nonlatin(e):
     return e.str.contains(NONLATIN_RE)
 
 
-def clean_name_v1(e):
-    """Lowercased, accent-stripped (Latin only), punctuation-free name string."""
-    return (e.str.normalize("NFKD")
-             .str.replace_all(r"(\p{Latin})\p{Mn}+", "$1")
-             .str.to_lowercase()
-             .str.replace_all(r"^.*?(?-u:\b)(?:formerly|fka|f/k/a)(?-u:\b)[:\s]*", "")   # keep the former name
-             .str.replace_all(r"\s(?-u:\b)(?:dba|d/b/a|aka|a/k/a|t/a)(?-u:\b).*$", "")   # keep the legal name
-             .str.replace_all(r"(?-u:\b)m/s(?-u:\b)", " ")
-             .str.replace_all(r"https?://|(?-u:\b)www\.", " ")
-             .str.replace_all(r"\.(?:com|net|org|co\.in|in|fr|biz|info|us)(?-u:\b)", " ")
+B = r"(?-u:\b)"   # ASCII word boundary: keeps the fast regex engine
+AFTER_MARKERS_DEFAULT = ["formerly known as", "formerly", "fka", "f/k/a"]
+BEFORE_MARKERS_DEFAULT = ["dba", "d/b/a", "aka", "a/k/a", "t/a"]
+
+
+def clean_name_v1(e, after_markers=None, before_markers=None):
+    """Lowercased, accent-stripped (Latin only), punctuation-free name string.
+    after_markers: keep the text AFTER these markers (e.g. 'X formerly Y' -> 'Y').
+    before_markers: keep the text BEFORE these markers (e.g. 'X dba Y' -> 'X')."""
+    after_markers = AFTER_MARKERS_DEFAULT if after_markers is None else after_markers
+    before_markers = BEFORE_MARKERS_DEFAULT if before_markers is None else before_markers
+    s = (e.str.normalize("NFKD")
+          .str.replace_all(r"(\p{Latin})\p{Mn}+", "$1")
+          .str.replace_all("[\u200c\u200d]", "")                          # zero-width (non-)joiners
+          .str.to_lowercase())
+    if after_markers:
+        s = s.str.replace_all(rf"^.*?{B}(?:{'|'.join(after_markers)}){B}[:\s]*", "")
+    if before_markers:
+        s = s.str.replace_all(rf"\s*\(?{B}(?:{'|'.join(before_markers)}){B}.*$", "")
+    return (s.str.replace_all(rf"{B}m/s{B}", " ")
+             .str.replace_all(rf"https?://|{B}www\.", " ")
+             .str.replace_all(rf"\.(?:com|net|org|co\.in|in|fr|biz|info|us){B}", " ")
              .str.replace_all(r"[&+@]", " ")
              .str.replace_all(r"\.", "")                                     # S.A.R.L. -> sarl
              .str.replace_all(r"[^\p{L}\p{M}\p{N}]+", " ")
-             .str.replace_all(r"(?-u:\b)s ?a ?r ?l(?-u:\b)", "sarl")                      # spaced-out legal forms
-             .str.replace_all(r"(?-u:\b)s ?a ?s ?u(?-u:\b)", "sasu")
-             .str.replace_all(r"(?-u:\b)s ?a ?s(?-u:\b)", "sas")
-             .str.replace_all(r"(?-u:\b)e ?u ?r ?l(?-u:\b)", "eurl")
-             .str.replace_all(r"(?-u:\b)p ?l ?l ?c(?-u:\b)", "pllc")
-             .str.replace_all(r"(?-u:\b)l ?l ?c(?-u:\b)", "llc")
-             .str.replace_all(r"(?-u:\b)l ?l ?p(?-u:\b)", "llp")
-             .str.replace_all(r"(?-u:\b)p ?c(?-u:\b)", "pc")
+             .str.replace_all(rf"{B}s ?a ?r ?l{B}", "sarl")                  # spaced-out legal forms
+             .str.replace_all(rf"{B}s ?a ?s ?u{B}", "sasu")
+             .str.replace_all(rf"{B}s ?a ?s{B}", "sas")
+             .str.replace_all(rf"{B}e ?u ?r ?l{B}", "eurl")
+             .str.replace_all(rf"{B}p ?l ?l ?c{B}", "pllc")
+             .str.replace_all(rf"{B}l ?l ?c{B}", "llc")
+             .str.replace_all(rf"{B}l ?l ?p{B}", "llp")
+             .str.replace_all(rf"{B}p ?c{B}", "pc")
              .str.strip_chars())
 
 
-def name_tokens_v1(e):
+def name_tokens_v1(e, after_markers=None, before_markers=None):
     """Cleaned name -> token list (legal words kept; used for native-script alignment)."""
-    return clean_name_v1(e).str.split(" ").list.eval(pl.element().filter(pl.element() != ""))
+    return (clean_name_v1(e, after_markers, before_markers)
+            .str.split(" ").list.eval(pl.element().filter(pl.element() != "")))
 
 
 def core_from_tokens_v1(toks):
