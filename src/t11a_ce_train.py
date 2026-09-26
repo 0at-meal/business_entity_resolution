@@ -56,8 +56,14 @@ def build_pairs(p_tr, gt, s1_sel, work):
     return df.with_columns(pl.col("y").fill_null(0.0)).sample(fraction=1.0, shuffle=True, seed=3)
 
 
-def main(data, work="/kaggle/working"):
+def main(data, work="/kaggle/working", model=None, name=None, frac=None, epochs=None):
+    """model/name/frac/epochs override the module defaults (e.g. a larger cross-encoder)."""
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    global MODEL, NAME, TRAIN_S1_FRAC, EPOCHS
+    MODEL = model or MODEL
+    NAME = name or NAME
+    TRAIN_S1_FRAC = frac or TRAIN_S1_FRAC
+    EPOCHS = epochs or EPOCHS
 
     t0 = time.time()
     assert torch.cuda.is_available(), "No GPU: set Accelerator to GPU in the notebook settings"

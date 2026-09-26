@@ -1,0 +1,10 @@
+import polars as pl
+m = pl.read_csv("output/matching_results.tsv", separator="\t", quote_char=None, infer_schema_length=0)
+s1 = pl.read_parquet("data/parquet/test_source1.parquet", columns=["entity_id"])
+print("columns:", m.columns, "| rows:", m.height, "| unique S1:", m["source1_entity_id"].n_unique(), "| test S1:", s1.height)
+print("missing S1 rows:", s1.join(m, left_on="entity_id", right_on="source1_entity_id", how="anti").height)
+ex = (m.select("source1_entity_id", ids=pl.col("matched_entity_ids").fill_null("").str.split(","))
+       .explode("ids").filter(pl.col("ids") != ""))
+print("bad ID prefix:", ex.filter(~pl.col("ids").str.contains(r"^S[23]-\d+$")).height)
+print("duplicates within a list:", ex.height - ex.unique().height)
+print("IDs used by more than one S1:", int(ex["ids"].is_duplicated().sum()))

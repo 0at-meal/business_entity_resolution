@@ -31,9 +31,9 @@ from ber.split import VAL_FOLD, fold_expr
 from ber.stage01 import find_checkpoint
 
 SRC_TAG = "t10"
-TAG = "t11"
-CE_NAME = "minilm"
-LO, HI = 0.01, 0.99
+TAG = "t12"
+CE_NAMES = ["minilm", "minilm12"]   # every cross-encoder found is used; missing ones are skipped
+LO, HI = 0.02, 0.999                # LO matches the lowest test probability saved by T10 (KEEP_P)
 MAXLEN = 96
 
 
@@ -49,18 +49,28 @@ def logit(x):
     return np.log(x / (1 - x))
 
 
-def ce_score(pairs, stage_path, model, tok):
+def ce_score(pairs, stage_path, models):
+    """Score pairs with every cross-encoder in `models` ({name: (model, tok)}); adds ce_<name>."""
     ids = pl.concat([pairs.select(pl.col("s1").alias("id")), pairs.select(pl.col("c").alias("id"))]).unique()
     text = pl.scan_parquet(stage_path).select(TEXT_COLS).collect().join(ids, on="id", how="semi")
     df = attach_text(pairs, text)
-    s = predict(model, tok, df["a_text"].to_list(), df["b_text"].to_list(), MAXLEN)
-    return df.select("s1", "c").with_columns(ce=pl.Series(s, dtype=pl.Float32))
+    out = df.select("s1", "c")
+    a, b = df["a_text"].to_list(), df["b_text"].to_list()
+    for name, (model, tok) in models.items():
+        t1 = time.time()
+        s = predict(model, tok, a, b, MAXLEN)
+        out = out.with_columns(pl.Series(f"ce_{name}", s, dtype=pl.Float32))
+        print(f"  {name}: {len(a):,} pairs in {time.time() - t1:.0f}s", flush=True)
+    return out
 
 
-def blend_features(df):
+def blend_features(df, names):
     lp = logit(df["p"].to_numpy())
-    ce = df["ce"].to_numpy().astype(np.float64)
-    return np.column_stack([lp, ce, lp * ce])
+    cols = [lp]
+    for n in names:
+        ce = df[f"ce_{n}"].to_numpy().astype(np.float64)
+        cols += [ce, lp * ce]
+    return np.column_stack(cols)
 
 
 def best_rule(pred, gt, base, label):
@@ -96,10 +106,19 @@ def main(data, work="/kaggle/working"):
     pv = pl.read_parquet(find_path(f"**/artifacts/val_pred_{SRC_TAG}.parquet", work))
     pt = pl.read_parquet(find_path(f"**/artifacts/test_pred_{SRC_TAG}.parquet", work))
     cand_file = find_path(f"**/output_{SRC_TAG}/candidate_pairs.tsv", work)
-    ce_dir = os.path.dirname(find_path(f"**/ce_model_{CE_NAME}/config.json", work))
-    print(f"val preds {pv.height:,} | test preds {pt.height:,} | CE model {ce_dir}")
-    tok = AutoTokenizer.from_pretrained(ce_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(ce_dir).to("cuda").half()
+    models = {}
+    for n in CE_NAMES:
+        try:
+            d = os.path.dirname(find_path(f"**/ce_model_{n}/config.json", work))
+        except FileNotFoundError:
+            print(f"cross-encoder '{n}' not found - skipped")
+            continue
+        models[n] = (AutoModelForSequenceClassification.from_pretrained(d).to("cuda").half(),
+                     AutoTokenizer.from_pretrained(d))
+        print(f"loaded cross-encoder '{n}' from {d}")
+    assert models, "no cross-encoder found: attach the ber-03 output(s)"
+    names = list(models)
+    print(f"val preds {pv.height:,} | test preds {pt.height:,} | cross-encoders {names}")
 
     gt = (explode_ids(pl.read_parquet(f"{data}/train_ground_truth.parquet"),
                       "source1_entity_id", "matched_entity_ids")
@@ -115,7 +134,7 @@ def main(data, work="/kaggle/working"):
     uv = pv.filter(pl.col("p").is_between(LO, HI))
     print(f"uncertain val pairs: {uv.height:,} of {pv.height:,} ({uv.height / pv.height:.3f})")
     t1 = time.time()
-    uv = uv.join(ce_score(uv.select("s1", "c"), p_tr, model, tok), on=["s1", "c"])
+    uv = uv.join(ce_score(uv.select("s1", "c"), p_tr, models), on=["s1", "c"])
     uv = (uv.join(gt.with_columns(y=pl.lit(1)), on=["s1", "c"], how="left")
             .with_columns(pl.col("y").fill_null(0)))
     print(f"scored in {time.time() - t1:.0f}s")
@@ -123,14 +142,15 @@ def main(data, work="/kaggle/working"):
     t04.section("2. FIT BLEND ON HALF A, COMPARE ON HALF B")
     ua = uv.join(A, on="s1", how="semi")
     ub = uv.join(B, on="s1", how="semi")
-    lr = LogisticRegression(C=1.0, max_iter=500).fit(blend_features(ua), ua["y"].to_numpy())
-    print(f"blend coefficients [logit_p, ce, logit_p*ce]: {np.round(lr.coef_[0], 4)} intercept {lr.intercept_[0]:.4f}")
-    pb = lr.predict_proba(blend_features(ub))[:, 1]
+    lr = LogisticRegression(C=1.0, max_iter=1000).fit(blend_features(ua, names), ua["y"].to_numpy())
+    print(f"blend coefficients [logit_p, (ce, logit_p*ce) per model {names}]: "
+          f"{np.round(lr.coef_[0], 4)} intercept {lr.intercept_[0]:.4f}")
+    pb = lr.predict_proba(blend_features(ub, names))[:, 1]
     yb = ub["y"].to_numpy()
+    aucs = " | ".join(f"{n} {roc_auc_score(yb, ub[f'ce_{n}'].to_numpy()):.5f}" for n in names)
     print(f"half-B uncertain pairs {ub.height:,} (pos {yb.mean():.3f}) AUC: "
-          f"LightGBM {roc_auc_score(yb, ub['p'].to_numpy()):.5f} | "
-          f"cross-encoder {roc_auc_score(yb, ub['ce'].to_numpy()):.5f} | blend {roc_auc_score(yb, pb):.5f}")
-    uv = uv.with_columns(p_blend=pl.Series(lr.predict_proba(blend_features(uv))[:, 1], dtype=pl.Float32))
+          f"LightGBM {roc_auc_score(yb, ub['p'].to_numpy()):.5f} | {aucs} | blend {roc_auc_score(yb, pb):.5f}")
+    uv = uv.with_columns(p_blend=pl.Series(lr.predict_proba(blend_features(uv, names))[:, 1], dtype=pl.Float32))
     pv2 = (pv.join(uv.select("s1", "c", "p_blend"), on=["s1", "c"], how="left")
              .with_columns(p=pl.coalesce("p_blend", "p")).drop("p_blend"))
     res = [best_rule(pv.join(B, on="s1", how="semi"), gt, B, f"{SRC_TAG} LightGBM"),
@@ -147,9 +167,9 @@ def main(data, work="/kaggle/working"):
     ut = pt.filter(pl.col("p").is_between(LO, HI))
     print(f"uncertain test pairs: {ut.height:,} of {pt.height:,}")
     t1 = time.time()
-    ut = ut.join(ce_score(ut.select("s1", "c"), p_te, model, tok), on=["s1", "c"])
+    ut = ut.join(ce_score(ut.select("s1", "c"), p_te, models), on=["s1", "c"])
     print(f"scored in {time.time() - t1:.0f}s")
-    ut = ut.with_columns(p_blend=pl.Series(lr.predict_proba(blend_features(ut))[:, 1], dtype=pl.Float32))
+    ut = ut.with_columns(p_blend=pl.Series(lr.predict_proba(blend_features(ut, names))[:, 1], dtype=pl.Float32))
     pt2 = (pt.join(ut.select("s1", "c", "p_blend"), on=["s1", "c"], how="left")
              .with_columns(p=pl.coalesce("p_blend", "p")).drop("p_blend"))
     pt2.write_parquet(f"{work}/artifacts/test_pred_{TAG}.parquet")
