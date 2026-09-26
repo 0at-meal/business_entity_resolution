@@ -31,9 +31,10 @@ from ber.split import VAL_FOLD, fold_expr
 from ber.stage01 import find_checkpoint
 
 SRC_TAG = "t10"
-TAG = "t12"
+TAG = "t13"
 CE_NAMES = ["minilm", "minilm12"]   # every cross-encoder found is used; missing ones are skipped
 LO, HI = 0.02, 0.999                # LO matches the lowest test probability saved by T10 (KEEP_P)
+FR_OVERRIDE = {"minilm12": "minilm12_fr"}  # for French test pairs, the French-adapted model fills this slot
 MAXLEN = 96
 
 
@@ -117,6 +118,18 @@ def main(data, work="/kaggle/working"):
                      AutoTokenizer.from_pretrained(d))
         print(f"loaded cross-encoder '{n}' from {d}")
     assert models, "no cross-encoder found: attach the ber-03 output(s)"
+    models_fr = {}
+    for base_name, fr_name in FR_OVERRIDE.items():
+        if base_name not in models:
+            continue
+        try:
+            d = os.path.dirname(find_path(f"**/ce_model_{fr_name}/config.json", work))
+        except FileNotFoundError:
+            print(f"French override '{fr_name}' not found - France uses '{base_name}'")
+            continue
+        models_fr[base_name] = (AutoModelForSequenceClassification.from_pretrained(d).to("cuda").half(),
+                                AutoTokenizer.from_pretrained(d))
+        print(f"French pairs: '{fr_name}' replaces '{base_name}' (from {d})")
     names = list(models)
     print(f"val preds {pv.height:,} | test preds {pt.height:,} | cross-encoders {names}")
 
@@ -167,7 +180,18 @@ def main(data, work="/kaggle/working"):
     ut = pt.filter(pl.col("p").is_between(LO, HI))
     print(f"uncertain test pairs: {ut.height:,} of {pt.height:,}")
     t1 = time.time()
-    ut = ut.join(ce_score(ut.select("s1", "c"), p_te, models), on=["s1", "c"])
+    cty_map = (pl.scan_parquet(p_te).filter(pl.col("src") == 1)
+                 .select(pl.col("id").alias("s1"), "country").collect())
+    ut = ut.join(cty_map, on="s1")
+    parts = []
+    for is_fr, sub in ((True, ut.filter(pl.col("country") == "France")),
+                       (False, ut.filter(pl.col("country") != "France"))):
+        if sub.height == 0:
+            continue
+        mdl = {**models, **models_fr} if is_fr else models
+        print(f"  {'France' if is_fr else 'other countries'}: {sub.height:,} pairs", flush=True)
+        parts.append(sub.join(ce_score(sub.select("s1", "c"), p_te, mdl), on=["s1", "c"]))
+    ut = pl.concat(parts).drop("country")
     print(f"scored in {time.time() - t1:.0f}s")
     ut = ut.with_columns(p_blend=pl.Series(lr.predict_proba(blend_features(ut, names))[:, 1], dtype=pl.Float32))
     pt2 = (pt.join(ut.select("s1", "c", "p_blend"), on=["s1", "c"], how="left")
