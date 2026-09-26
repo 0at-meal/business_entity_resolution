@@ -24,7 +24,11 @@ FULL = ["k1_eq", "k1_empty", "n_jw", "n_tsort", "n_partial", "core_j", "core_con
         "num_trunc", "a_num_n", "b_num_n", "state_rel", "b_addr_null", "b_nonlatin", "b_src",
         "m0", "m1", "m2", "m3", "m4",
         # v2 (T10): residual words = words one side has that the other lacks
-        "n_resid_ratio", "a_resid_n", "b_resid_n", "addr_resid_ratio", "num_conflict"]
+        "n_resid_ratio", "a_resid_n", "b_resid_n", "addr_resid_ratio", "num_conflict",
+        # v3 (T16): TF-IDF nearest-neighbour blocking pass (bit 32)
+        "m5", "tf_cos", "tf_rank"]
+TF_COLS = ["tf_cos", "tf_rank"]
+KEEP_BIT = 32   # pairs found by the TF-IDF pass always survive the top-K cut
 FEATS = CHEAP + CTX + FULL
 
 
@@ -64,15 +68,18 @@ def cheap(p):
 
 
 def phase_a(cand, recs, k, chunk=40_000):
-    """cand: s1, c, mask. Returns top-k pairs per S1 with cheap features."""
+    """cand: s1, c, mask (+ tf_cos, tf_rank). Returns top-k pairs per S1 by quick score, plus every
+    pair found by the TF-IDF pass (found precisely because keys missed them, so q may be low)."""
     rc = recs.select("id", "k1", "name_str", "addr_str")
+    extra = [c for c in TF_COLS if c in cand.columns]
     s1s = cand.select("s1").unique().sort("s1")
     outs = []
     for i in range(0, s1s.height, chunk):
         ids = s1s.slice(i, chunk)
         p = cheap(attach(cand.join(ids, on="s1", how="semi"), rc))
-        p = p.filter(pl.col("q").rank("ordinal", descending=True).over("s1") <= k)
-        outs.append(p.select("s1", "c", "mask", *CHEAP))
+        p = p.filter((pl.col("q").rank("ordinal", descending=True).over("s1") <= k)
+                     | ((pl.col("mask") & KEEP_BIT) > 0))
+        outs.append(p.select("s1", "c", "mask", *extra, *CHEAP))
         del p
         gc.collect()
     return pl.concat(outs)
@@ -91,6 +98,9 @@ def context(p):
 
 
 def full(p, recs):
+    for col in TF_COLS:
+        if col not in p.columns:
+            p = p.with_columns(pl.lit(None, dtype=pl.Float32).alias(col))
     p = attach(p, recs.select(REC_COLS))
     p = p.with_columns(
         k1_eq=(pl.col("a_k1") == pl.col("b_k1")),
@@ -109,7 +119,7 @@ def full(p, recs):
                     .when(pl.col("a_state") == pl.col("b_state")).then(1).otherwise(0),
         b_addr_null=pl.col("b_addr_null"), b_nonlatin=pl.col("b_nonlatin"), b_src=pl.col("b_src"),
         m0=(pl.col("mask") & 1) > 0, m1=(pl.col("mask") & 2) > 0,
-        m2=(pl.col("mask") & 4) > 0, m3=(pl.col("mask") & 8) > 0, m4=(pl.col("mask") & 16) > 0,
+        m2=(pl.col("mask") & 4) > 0, m3=(pl.col("mask") & 8) > 0, m4=(pl.col("mask") & 16) > 0, m5=(pl.col("mask") & 32) > 0,
         _nra=pl.col("a_name_core").list.set_difference(pl.col("b_name_core")).list.join(" "),
         _nrb=pl.col("b_name_core").list.set_difference(pl.col("a_name_core")).list.join(" "),
         _ara=pl.col("a_addr_toks").list.set_difference(pl.col("b_addr_toks")).list.join(" "),

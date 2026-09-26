@@ -72,13 +72,16 @@ def train(model, tok, tr, va, maxlen=96, bs=256, lr=3e-5, epochs=1, eval_every=2
     from sklearn.metrics import log_loss, roc_auc_score
     from transformers import get_linear_schedule_with_warmup
 
-    model.to(device)
+    base = model.to(device)
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(base)
+        log(f"  using {torch.cuda.device_count()} GPUs (DataParallel)")
     dl = DataLoader(PairDS(tr["a"], tr["b"], tr["y"]), batch_size=bs, shuffle=True, num_workers=2,
                     collate_fn=make_collate(tok, maxlen), drop_last=True)
     steps = epochs * len(dl)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sch = get_linear_schedule_with_warmup(opt, int(0.05 * steps), steps)
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler("cuda")
     lossf = torch.nn.BCEWithLogitsLoss()
     best, step, t0 = -1.0, 0, time.time()
     for ep in range(epochs):
@@ -108,7 +111,7 @@ def train(model, tok, tr, va, maxlen=96, bs=256, lr=3e-5, epochs=1, eval_every=2
                 tag = ""
                 if auc > best:
                     best = auc
-                    model.save_pretrained(save_dir)
+                    base.save_pretrained(save_dir)
                     tok.save_pretrained(save_dir)
                     tag = "  <- saved"
                 log(f"  [eval] step {step:,}: val AUC {auc:.5f} logloss {ll:.5f}{tag}", flush=True)

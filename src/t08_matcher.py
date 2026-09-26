@@ -22,10 +22,11 @@ from ber.metrics import explode_ids, per_entity_f, summarize
 from ber.split import VAL_FOLD, fold_expr
 from ber.stage01 import find_checkpoint
 
-TAG = "t10"          # version tag: outputs go to output_{TAG}/, artifacts/*_{TAG}.*
+TAG = "t16"          # version tag: outputs go to output_{TAG}/, artifacts/*_{TAG}.*
 TOPK = 50            # candidates kept per S1 after the cheap pre-filter (T09: 30 -> 50 recovers ~0.8%)
 TRAIN_FRAC = 0.35    # share of training-fold S1 entities used to train the model
-KEEP_P = 0.02        # test pairs with p below this are discarded before decisions
+KEEP_P = 0.01        # test pairs with p below this are discarded before decisions
+TOP_SAVE = 10        # per S1, the TOP_SAVE highest-probability pairs are saved for stacking
 PARAMS = dict(objective="binary", learning_rate=0.1, num_leaves=127, min_data_in_leaf=200,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, num_threads=0, seed=7)
@@ -38,6 +39,29 @@ def find_cand(split, country, work):
         if os.path.exists(p):
             return p
     raise FileNotFoundError(f"stage02 candidates for {split}/{country} not found")
+
+
+def load_cand(split, country, work):
+    """Key-blocking candidates (stage02) merged with TF-IDF pass-6 pieces (stage02t), if attached."""
+    cand = pl.read_parquet(find_cand(split, country, work))
+    hits = (glob.glob(f"{work}/stage02t/tf_{split}_{country}_p*.parquet")
+            + glob.glob(f"/kaggle/input/**/stage02t/tf_{split}_{country}_p*.parquet", recursive=True))
+    by_name = {}
+    for h in hits:
+        by_name.setdefault(os.path.basename(h), h)
+    if not by_name:
+        print(f"    [{split}/{country}] no TF-IDF pieces found - key blocking only", flush=True)
+        return cand
+    tf = (pl.concat([pl.read_parquet(h) for h in sorted(by_name.values())])
+            .unique(subset=["s1", "c"]).with_columns(pl.col("tf_rank").cast(pl.Float32)))
+    merged = (cand.join(tf, on=["s1", "c"], how="full", coalesce=True)
+                  .with_columns(mask=pl.when(pl.col("tf_cos").is_not_null())
+                                     .then(pl.col("mask").fill_null(0).cast(pl.UInt8) | pl.lit(32, pl.UInt8))
+                                     .otherwise(pl.col("mask"))))
+    added = merged.height - cand.height
+    print(f"    [{split}/{country}] TF-IDF pieces {sorted(by_name)}: {tf.height:,} pairs, "
+          f"{added:,} new beyond key blocking", flush=True)
+    return merged
 
 
 def countries_of(path):
@@ -77,7 +101,7 @@ def main(data, work="/kaggle/working"):
     for c in countries_of(p_tr):
         t1 = time.time()
         recs = load_recs(p_tr, c)
-        cand = pl.read_parquet(find_cand("train", c, work))
+        cand = load_cand("train", c, work)
         A = context(phase_a(cand, recs, TOPK))
         vc_all = cand.join(val, on="s1", how="semi")
         del cand
@@ -148,11 +172,11 @@ def main(data, work="/kaggle/working"):
     test_s1 = ids_te.filter(pl.col("src") == 1).select(pl.col("id").alias("s1"), "entity_id")
     idmap = ids_te.filter(pl.col("src") != 1).select("id", "entity_id")
     del ids_te
-    cands, preds, trows = [], [], []
+    cands, preds, trows, tops = [], [], [], []
     for c in countries_of(p_te):
         t1 = time.time()
         recs = load_recs(p_te, c)
-        A = context(phase_a(pl.read_parquet(find_cand("test", c, work)), recs, TOPK))
+        A = context(phase_a(load_cand("test", c, work), recs, TOPK))
         cands.append(A.select("s1", "c"))
         F = full_chunked(A, recs)
         del A, recs
@@ -160,6 +184,7 @@ def main(data, work="/kaggle/working"):
         p = F.select("s1", "c").with_columns(
             p=pl.Series(model.predict(F.select(FEATS).to_numpy(), num_threads=0)).cast(pl.Float32))
         preds.append(p.filter(pl.col("p") >= KEEP_P))
+        tops.append(p.filter(pl.col("p").rank("ordinal", descending=True).over("s1") <= TOP_SAVE))
         trows.append({"country": c, "pairs": F.height, "kept": preds[-1].height})
         print(f"  {c}: {F.height:,} pairs scored in {time.time() - t1:.0f}s {t04.mem()}", flush=True)
         del F, p
@@ -167,6 +192,7 @@ def main(data, work="/kaggle/working"):
     cand_t = pl.concat(cands)
     all_p = pl.concat(preds)
     all_p.write_parquet(f"{work}/artifacts/test_pred_{TAG}.parquet")
+    pl.concat(tops).write_parquet(f"{work}/artifacts/test_top{TOP_SAVE}_{TAG}.parquet")
     pred_t = chooser(all_p)
     out_dir = f"{work}/output_{TAG}"
     os.makedirs(out_dir, exist_ok=True)
