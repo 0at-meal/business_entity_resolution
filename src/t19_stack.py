@@ -110,6 +110,28 @@ def score(data, split, part=0, n_parts=1, work="/kaggle/working", ce_names=None,
     print(f"wrote {path} in {time.time() - t0:.0f}s")
 
 
+def rescore_france(data, model="minilm12v2_fr2", slot="minilm12v2", work="/kaggle/working"):
+    """Rescore every French test top-10 pair with a (newer) French-adapted cross-encoder.
+    Writes stage03/fr_override_test.parquet; stack() substitutes it into column ce_<slot>."""
+    import torch
+    assert torch.cuda.is_available(), "No GPU: set Accelerator to GPU"
+    t0 = time.time()
+    os.makedirs(f"{work}/stage03", exist_ok=True)
+    stage = find_checkpoint("test", work)
+    fr = (pl.scan_parquet(stage).filter((pl.col("src") == 1) & (pl.col("country") == "France"))
+            .select(pl.col("id").alias("s1")).collect())
+    top = top_pairs("test", work).join(fr, on="s1", how="semi")
+    ids = pl.concat([top.select(pl.col("s1").alias("id")), top.select(pl.col("c").alias("id"))]).unique()
+    text = pl.scan_parquet(stage).select(TEXT_COLS).collect().join(ids, on="id", how="semi")
+    df = attach_text(top, text)
+    m, tok = load_model(model, work)
+    sc = predict(m, tok, df["a_text"].to_list(), df["b_text"].to_list(), 96, bs=2048)
+    out = df.select("s1", "c").with_columns(pl.Series(f"ce_{slot}", sc.astype(np.float32)))
+    path = f"{work}/stage03/fr_override_test.parquet"
+    out.write_parquet(path)
+    print(f"wrote {path}: {out.height:,} French pairs scored with '{model}' in {time.time() - t0:.0f}s")
+
+
 # ----------------------------------------------------------------------------- step 2: stacking
 def load_scores(split, work):
     hits = (glob.glob(f"{work}/stage03/ce_{split}_p*.parquet")
@@ -152,6 +174,14 @@ def stack(data, work="/kaggle/working", tag=TAG):
     t0 = time.time()
     os.makedirs(f"{work}/artifacts", exist_ok=True)
     sv, st = load_scores("val", work), load_scores("test", work)
+    ovr = (glob.glob(f"{work}/stage03/fr_override_test.parquet")
+           + glob.glob("/kaggle/input/**/stage03/fr_override_test.parquet", recursive=True))
+    if ovr:
+        o = pl.read_parquet(ovr[0])
+        col = [c for c in o.columns if c.startswith("ce_")][0]
+        st = (st.join(o.rename({col: "_ovr"}), on=["s1", "c"], how="left")
+                .with_columns(pl.coalesce("_ovr", col).alias(col)).drop("_ovr"))
+        print(f"French override applied: {o.height:,} pairs in column {col} (from {ovr[0]})")
     names = [c[3:] for c in sv.columns if c.startswith("ce_")]
     assert names == [c[3:] for c in st.columns if c.startswith("ce_")], "val/test scored with different models"
     fv, cols = features(sv, names)
