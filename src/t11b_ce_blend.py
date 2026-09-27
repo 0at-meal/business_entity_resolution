@@ -87,7 +87,15 @@ def apply_rule(pred, r):
     return decide_expected(pred, r["a"], r["b"]) if r["rule"] == "expected" else decide(pred, r["a"], r["b"])
 
 
-def main(data, work="/kaggle/working"):
+def main(data, work="/kaggle/working", src_tag=None, tag=None, ce_names=None, fr_override=None):
+    """src_tag: which LightGBM run's predictions to start from (e.g. "t16").
+    tag: output tag (writes output_<tag>/). ce_names / fr_override: which cross-encoders to use."""
+    global SRC_TAG, TAG, CE_NAMES, FR_OVERRIDE
+    SRC_TAG = src_tag or SRC_TAG
+    TAG = tag or TAG
+    CE_NAMES = ce_names or CE_NAMES
+    FR_OVERRIDE = fr_override if fr_override is not None else FR_OVERRIDE
+    print(f"blend: predictions from {SRC_TAG} -> output_{TAG} | cross-encoders {CE_NAMES} | French {FR_OVERRIDE}")
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
     from transformers import AutoModelForSequenceClassification, AutoTokenizer

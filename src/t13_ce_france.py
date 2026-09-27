@@ -48,8 +48,15 @@ def first_hit(patterns):
     return None
 
 
-def main(data, work="/kaggle/working"):
+def main(data, work="/kaggle/working", base=None, name=None, pred_tags=None):
+    """base: cross-encoder to adapt (e.g. "minilm12v2"); name: saved as ce_model_<name>;
+    pred_tags: test-prediction runs to take pseudo-labels from, first found wins."""
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    global BASE, NAME, PRED_TAGS
+    BASE = base or BASE
+    NAME = name or NAME
+    PRED_TAGS = pred_tags or PRED_TAGS
+    print(f"adapting '{BASE}' -> '{NAME}', pseudo-labels from first of {PRED_TAGS}")
 
     pl.Config.set_fmt_str_lengths(70)
     pl.Config.set_tbl_width_chars(250)
@@ -101,7 +108,7 @@ def main(data, work="/kaggle/working"):
     tr = pl.concat([fr, orig]).sample(fraction=1.0, shuffle=True, seed=9)
     va = pl.read_parquet(f"{ce_data}/val_pairs.parquet").select("a_text", "b_text", "y")
     print(f"total training pairs {tr.height:,}; US/India monitoring pairs {va.height:,} "
-          f"(original L12 val AUC for reference: 0.99939)")
+          f"(reference: L12 0.99939, L12 v2 0.99956)")
 
     t04.section("2. CONTINUE TRAINING")
     tok = AutoTokenizer.from_pretrained(base_dir)
