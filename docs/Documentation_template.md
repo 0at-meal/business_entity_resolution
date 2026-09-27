@@ -1,8 +1,8 @@
 # ML Challenge 2026: Business Entity Resolution Solution
 
-**Team Name:** [Your Team Name]
-**Team Members:** [List all team members]
-**Submission Date:** [Date]
+**Team Name:** [Patterns & Paranoia]
+**Team Members:** [Niraj Jadhav, Yash Jadhav, Kanav Mishra, Nikhil Mahale]
+**Submission Date:** [27/09/2026]
 
 ---
 
